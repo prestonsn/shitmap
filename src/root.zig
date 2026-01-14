@@ -2,7 +2,7 @@ const std = @import("std");
 
 pub const ShitMapConfig = struct {
     growable: bool = true,
-    load_factor: f32 = 0.75,
+    load_factor: f32 = 0.80,
 };
 
 pub fn ShitMap(comptime K: type, comptime V: type, comptime config: ShitMapConfig) type {
@@ -14,14 +14,12 @@ pub fn ShitMap(comptime K: type, comptime V: type, comptime config: ShitMapConfi
         const HASH_MASK: u64 = 1 << 63;
 
         slots: []Slot,
+        entries: []Entry,
         count: usize,
         capacity: usize,
         allocator: std.mem.Allocator,
 
-        const Slot: type = struct {
-            hash: u64,
-            entry: ?*Entry,
-        };
+        const Slot: type = struct { hash: u64 };
 
         const Entry = struct { key: K, value: V };
 
@@ -36,11 +34,15 @@ pub fn ShitMap(comptime K: type, comptime V: type, comptime config: ShitMapConfi
                 return error.CapacityNotPowerOfTwo;
             }
 
-            const slots = allocator.alloc(Slot, capacity) catch return error.OutOfMemory;
-            @memset(slots, Slot{ .hash = EMPTY, .entry = null });
+            const slots = try allocator.alloc(Slot, capacity);
+            @memset(slots, Slot{ .hash = EMPTY });
+
+            const entries = try allocator.alloc(Entry, capacity);
+            @memset(entries, Entry{ .key = undefined, .value = undefined });
 
             return Self{
                 .slots = slots,
+                .entries = entries,
                 .count = 0,
                 .capacity = capacity,
                 .allocator = allocator,
@@ -48,14 +50,8 @@ pub fn ShitMap(comptime K: type, comptime V: type, comptime config: ShitMapConfi
         }
 
         pub fn deinit(self: *Self) void {
-            // Free all entries
-            for (self.slots) |slot| {
-                if (slot.entry) |entry| {
-                    self.allocator.destroy(entry);
-                }
-            }
-            // Free slots array
             self.allocator.free(self.slots);
+            self.allocator.free(self.entries);
         }
 
         inline fn hashKey(key: K) u64 {
@@ -85,7 +81,7 @@ pub fn ShitMap(comptime K: type, comptime V: type, comptime config: ShitMapConfi
                 std.meta.eql(a, b);
         }
 
-        pub inline fn get(self: *Self, key: K) ?*V {
+        pub fn get(self: *Self, key: K) ?*V {
             const hash = hashKey(key);
             const mask = self.capacity - 1;
             const start_idx: usize = @intCast(hash & mask);
@@ -98,8 +94,8 @@ pub fn ShitMap(comptime K: type, comptime V: type, comptime config: ShitMapConfi
                     return null;
                 }
 
-                if (slot.hash == hash and keysEqual(slot.entry.?.key, key)) {
-                    return &slot.entry.?.value;
+                if (slot.hash == hash and keysEqual(self.entries[idx].key, key)) {
+                    return &self.entries[idx].value;
                 }
 
                 // TODO @prefetch next slot here for cache optimization? wtf is @prefetch
@@ -111,7 +107,7 @@ pub fn ShitMap(comptime K: type, comptime V: type, comptime config: ShitMapConfi
             }
         }
 
-        pub inline fn remove(self: *Self, key: K) ?V {
+        pub fn remove(self: *Self, key: K) ?V {
             const hash = hashKey(key);
             const mask = self.capacity - 1;
             const start_idx: usize = @intCast(hash & mask);
@@ -124,12 +120,11 @@ pub fn ShitMap(comptime K: type, comptime V: type, comptime config: ShitMapConfi
                     return null;
                 }
 
-                if (slot.hash == hash and keysEqual(slot.entry.?.key, key)) {
-                    const value = slot.entry.?.value;
-                    self.allocator.destroy(slot.entry.?);
+                if (slot.hash == hash and keysEqual(self.entries[idx].key, key)) {
+                    const value = self.entries[idx].value;
                     slot.hash = TOMBSTONE;
-                    slot.entry = null;
                     self.count -= 1;
+
                     return value;
                 }
 
@@ -154,30 +149,24 @@ pub fn ShitMap(comptime K: type, comptime V: type, comptime config: ShitMapConfi
 
             var idx = start_idx;
             while (true) {
-                const next_idx = (idx + 1) & mask;
-                @prefetch(&self.slots[next_idx], .{ .rw = .read, .locality = 3 });
-
                 const slot = &self.slots[idx];
 
-                if (slot.hash == EMPTY or slot.hash == TOMBSTONE) {
-                    // We empty, so we insert.
-                    const entry = self.allocator.create(Entry) catch return error.OutOfMemory;
-                    entry.* = .{ .key = key, .value = value };
+                if (slot.hash <= TOMBSTONE) {
+                    // Slot is empty or tombstone, so we insert.
                     slot.hash = hash;
-                    slot.entry = entry;
+                    self.entries[idx] = .{ .key = key, .value = value };
                     self.count += 1;
-
                     return;
                 }
 
                 // Key exists, set new value.
-                if (slot.hash == hash and keysEqual(slot.entry.?.key, key)) {
+                if (slot.hash == hash and keysEqual(self.entries[idx].key, key)) {
                     // Would be nice to return old value.
-                    slot.entry.?.value = value;
+                    self.entries[idx].value = value;
                     return;
                 }
 
-                idx = next_idx;
+                idx = (idx + 1) & mask;
                 if (idx == start_idx) {
                     return Error.MapFull;
                 }
@@ -189,34 +178,38 @@ pub fn ShitMap(comptime K: type, comptime V: type, comptime config: ShitMapConfi
         fn growImpl(self: *Self) Error!void {
             const new_capacity = 2 * self.capacity;
             const old_slots = self.slots;
+            const old_entries = self.entries;
 
             const new_slots = self.allocator.alloc(Slot, new_capacity) catch return error.OutOfMemory;
-            @memset(new_slots, Slot{ .hash = EMPTY, .entry = null });
+            const new_entries = self.allocator.alloc(Entry, new_capacity) catch return error.OutOfMemory;
+
+            @memset(new_slots, Slot{ .hash = EMPTY });
+            @memset(new_entries, Entry{ .key = undefined, .value = undefined });
 
             self.slots = new_slots;
+            self.entries = new_entries;
             self.capacity = new_capacity;
             self.count = 0;
 
             // Re-insert all entries (skip EMPTY and TOMBSTONE) in their new indexes.
-            for (old_slots) |slot| {
-                if (slot.hash != EMPTY and slot.hash != TOMBSTONE) {
-                    // Re-insert using existing Entry pointer (no new allocation needed!)
-                    self.insertExistingEntry(slot.hash, slot.entry.?);
+            for (old_slots, 0..) |slot, old_idx| {
+                if (slot.hash > TOMBSTONE) {
+                    self.insertExistingEntry(slot.hash, old_entries[old_idx]);
                 }
             }
 
-            // Free old slots array (but NOT the entries - they're reused)
             self.allocator.free(old_slots);
+            self.allocator.free(old_entries);
         }
 
-        fn insertExistingEntry(self: *Self, hash: u64, entry: *Entry) void {
+        fn insertExistingEntry(self: *Self, hash: u64, entry: Entry) void {
             const mask = self.capacity - 1;
             var idx: usize = @intCast(hash & mask);
             while (true) {
                 const slot = &self.slots[idx];
                 if (slot.hash == EMPTY) {
                     slot.hash = hash;
-                    slot.entry = entry;
+                    self.entries[idx] = entry;
                     self.count += 1;
                     return;
                 }

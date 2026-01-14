@@ -1,7 +1,7 @@
 const std = @import("std");
 const ziggypoo = @import("ziggypoo");
 const Timer = std.time.Timer;
-const ITERATIONS = 100_000;
+const ITERATIONS = 10_000_000;
 const WARMUP_ITERATIONS = 1000;
 
 pub fn main() !void {
@@ -17,34 +17,32 @@ pub fn main() !void {
 }
 
 fn benchInsert(allocator: std.mem.Allocator) !void {
-    std.debug.print("--- Insert Benchmark ---\n", .{});
-
-    // Benchmark ShitMap
     {
-        var timer = try Timer.start();
-        var map = try ziggypoo.ShitMap(u64, u64, .{}).init(allocator, 1024);
+        var map = try ziggypoo.ShitMap(u64, u64, .{
+            .growable = true,
+        }).init(allocator, 8192);
         defer map.deinit();
 
+        var timer = try Timer.start();
         for (0..ITERATIONS) |i| {
             try map.insert(i, i * 10);
         }
-
         const elapsed_ns = timer.read();
+
         const ns_per_op = elapsed_ns / ITERATIONS;
         std.debug.print("ShitMap:      {} ns/op\n", .{ns_per_op});
     }
 
-    // Benchmark std.AutoHashMap
     {
-        var timer = try Timer.start();
         var map = std.AutoHashMap(u64, u64).init(allocator);
         defer map.deinit();
 
+        var timer = try Timer.start();
         for (0..ITERATIONS) |i| {
             try map.put(i, i * 10);
         }
-
         const elapsed_ns = timer.read();
+
         const ns_per_op = elapsed_ns / ITERATIONS;
         std.debug.print("AutoHashMap: {} ns/op\n", .{ns_per_op});
     }
