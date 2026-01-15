@@ -88,8 +88,10 @@ pub fn ShitMap(comptime K: type, comptime V: type, comptime config: ShitMapConfi
 
             var idx = start_idx;
             while (true) {
-                const slot = &self.slots[idx];
+                const next_idx = (idx + 1) & mask;
+                // @prefetch(&self.slots[next_idx], .{ .rw = .read, .cache = .data, .locality = 3 });
 
+                const slot = &self.slots[idx];
                 if (slot.hash == EMPTY) {
                     return null;
                 }
@@ -98,9 +100,7 @@ pub fn ShitMap(comptime K: type, comptime V: type, comptime config: ShitMapConfi
                     return &self.entries[idx].value;
                 }
 
-                // TODO @prefetch next slot here for cache optimization? wtf is @prefetch
-                idx = (idx + 1) & mask;
-
+                idx = next_idx;
                 if (idx == start_idx) {
                     return null;
                 }
@@ -114,6 +114,9 @@ pub fn ShitMap(comptime K: type, comptime V: type, comptime config: ShitMapConfi
 
             var idx = start_idx;
             while (true) {
+                const next_idx = (idx + 1) & mask;
+                @prefetch(&self.slots[next_idx], .{ .rw = .read, .cache = .data, .locality = 3 });
+
                 const slot = &self.slots[idx];
 
                 if (slot.hash == EMPTY) {
@@ -128,8 +131,7 @@ pub fn ShitMap(comptime K: type, comptime V: type, comptime config: ShitMapConfi
                     return value;
                 }
 
-                // TODO @prefetch next slot here for cache optimization? wtf is @prefetch
-                idx = (idx + 1) & mask;
+                idx = next_idx;
                 if (idx == start_idx) return null;
             }
         }
@@ -149,6 +151,10 @@ pub fn ShitMap(comptime K: type, comptime V: type, comptime config: ShitMapConfi
 
             var idx = start_idx;
             while (true) {
+                const next_idx = (idx + 1) & mask;
+                @prefetch(&self.slots[next_idx], .{ .rw = .read, .cache = .data, .locality = 3 });
+                @prefetch(&self.entries[next_idx], .{ .rw = .write, .cache = .data, .locality = 3 });
+
                 const slot = &self.slots[idx];
 
                 if (slot.hash <= TOMBSTONE) {
@@ -166,7 +172,7 @@ pub fn ShitMap(comptime K: type, comptime V: type, comptime config: ShitMapConfi
                     return;
                 }
 
-                idx = (idx + 1) & mask;
+                idx = next_idx;
                 if (idx == start_idx) {
                     return Error.MapFull;
                 }
