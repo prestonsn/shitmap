@@ -141,7 +141,7 @@ pub fn ShitMap(comptime K: type, comptime V: type, comptime config: ShitMapConfi
                 const load_den = 100;
                 const load_num = comptime @as(u64, @intFromFloat(config.load_factor * load_den));
                 if (self.count * load_den > self.capacity * load_num) {
-                    try self.grow();
+                    try self.growImpl();
                 }
             }
 
@@ -178,8 +178,6 @@ pub fn ShitMap(comptime K: type, comptime V: type, comptime config: ShitMapConfi
                 }
             }
         }
-
-        pub const grow = if (config.growable) growImpl else @compileError("Map is not growable");
 
         fn growImpl(self: *Self) Error!void {
             const new_capacity = 2 * self.capacity;
