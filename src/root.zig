@@ -3,6 +3,7 @@ const std = @import("std");
 pub const ShitMapConfig = struct {
     growable: bool = true,
     load_factor: f32 = 0.80,
+    prefetch: bool = false,
 };
 
 pub fn ShitMap(comptime K: type, comptime V: type, comptime config: ShitMapConfig) type {
@@ -81,7 +82,7 @@ pub fn ShitMap(comptime K: type, comptime V: type, comptime config: ShitMapConfi
                 std.meta.eql(a, b);
         }
 
-        pub fn get(self: *Self, key: K) ?*V {
+        pub fn getPtr(self: *Self, key: K) ?*V {
             const hash = hashKey(key);
             const mask = self.capacity - 1;
             const start_idx: usize = @intCast(hash & mask);
@@ -89,7 +90,8 @@ pub fn ShitMap(comptime K: type, comptime V: type, comptime config: ShitMapConfi
             var idx = start_idx;
             while (true) {
                 const next_idx = (idx + 1) & mask;
-                // @prefetch(&self.slots[next_idx], .{ .rw = .read, .cache = .data, .locality = 3 });
+
+                @prefetch(&self.slots[next_idx], .{ .rw = .read, .cache = .data, .locality = 3 });
 
                 const slot = &self.slots[idx];
                 if (slot.hash == EMPTY) {

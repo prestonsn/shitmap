@@ -351,7 +351,7 @@ fn benchGetIncreasing(allocator: std.mem.Allocator) !void {
         var key_idx: usize = 0;
         for (0..config.warmup_samples) |_| {
             for (0..config.ops_per_sample) |_| {
-                std.mem.doNotOptimizeAway(map.get(keys[key_idx]));
+                std.mem.doNotOptimizeAway(map.getPtr(keys[key_idx]));
                 key_idx += 1;
             }
         }
@@ -361,7 +361,7 @@ fn benchGetIncreasing(allocator: std.mem.Allocator) !void {
         for (&samples) |*sample| {
             var timer = try Timer.start();
             for (0..config.ops_per_sample) |_| {
-                std.mem.doNotOptimizeAway(map.get(keys[key_idx]));
+                std.mem.doNotOptimizeAway(map.getPtr(keys[key_idx]));
                 key_idx += 1;
             }
             sample.* = timer.read();
@@ -452,7 +452,7 @@ fn benchGetRandom(allocator: std.mem.Allocator) !void {
         // Warmup
         for (0..config.warmup_samples) |_| {
             for (0..config.ops_per_sample) |_| {
-                std.mem.doNotOptimizeAway(map.get(keys[lookup_indices[lookup_idx]]));
+                std.mem.doNotOptimizeAway(map.getPtr(keys[lookup_indices[lookup_idx]]));
                 lookup_idx += 1;
             }
         }
@@ -460,13 +460,13 @@ fn benchGetRandom(allocator: std.mem.Allocator) !void {
         for (&samples) |*sample| {
             var timer = try Timer.start();
             for (0..config.ops_per_sample) |_| {
-                std.mem.doNotOptimizeAway(map.get(keys[lookup_indices[lookup_idx]]));
+                std.mem.doNotOptimizeAway(map.getPtr(keys[lookup_indices[lookup_idx]]));
                 lookup_idx += 1;
             }
             sample.* = timer.read();
         }
         const result = computeStats(&samples, config.ops_per_sample);
-        printResult("ShitMap random access get()", result);
+        printResult("ShitMap random access getPtr()", result);
     }
 
     // AutoHashMap benchmark
@@ -485,7 +485,7 @@ fn benchGetRandom(allocator: std.mem.Allocator) !void {
         // Warmup
         for (0..config.warmup_samples) |_| {
             for (0..config.ops_per_sample) |_| {
-                std.mem.doNotOptimizeAway(map.get(keys[lookup_indices[lookup_idx]]));
+                std.mem.doNotOptimizeAway(map.getPtr(keys[lookup_indices[lookup_idx]]));
                 lookup_idx += 1;
             }
         }
@@ -493,7 +493,7 @@ fn benchGetRandom(allocator: std.mem.Allocator) !void {
         for (&samples) |*sample| {
             var timer = try Timer.start();
             for (0..config.ops_per_sample) |_| {
-                std.mem.doNotOptimizeAway(map.get(keys[lookup_indices[lookup_idx]]));
+                std.mem.doNotOptimizeAway(map.getPtr(keys[lookup_indices[lookup_idx]]));
                 lookup_idx += 1;
             }
             sample.* = timer.read();

@@ -14,16 +14,16 @@ test "simple test" {
     try map.insert(12, "hi");
     try map.insert(13, "there");
 
-    if (map.get(12)) |value| {
+    if (map.getPtr(12)) |value| {
         std.debug.print("key {}, value {s}\n", .{ 12, value.* });
     }
 
-    if (map.get(13)) |value| {
+    if (map.getPtr(13)) |value| {
         std.debug.print("key {}, value {s}\n", .{ 13, value.* });
     }
 
     try map.insert(12, "updated");
-    if (map.get(12)) |value| {
+    if (map.getPtr(12)) |value| {
         std.debug.print("key {} = {s}\n", .{ 12, value.* });
     }
 }
@@ -41,11 +41,11 @@ test "remove returns value and allows re-insert" {
     try std.testing.expectEqual(@as(u32, 100), removed.?);
 
     // Get should return null after removal
-    try std.testing.expectEqual(@as(?*u32, null), map.get(42));
+    try std.testing.expectEqual(@as(?*u32, null), map.getPtr(42));
 
     // Re-insert at same key should work (TOMBSTONE handling)
     try map.insert(42, 200);
-    try std.testing.expectEqual(@as(u32, 200), map.get(42).?.*);
+    try std.testing.expectEqual(@as(u32, 200), map.getPtr(42).?.*);
 }
 
 test "static map returns MapFull error" {
@@ -80,11 +80,11 @@ test "growable map auto-resizes" {
     // Verify capacity increased
     try std.testing.expect(map.capacity > initial_capacity);
     // Verify all elements still retrievable
-    try std.testing.expectEqual(@as(u32, 10), map.get(1).?.*);
-    try std.testing.expectEqual(@as(u32, 20), map.get(2).?.*);
-    try std.testing.expectEqual(@as(u32, 30), map.get(3).?.*);
-    try std.testing.expectEqual(@as(u32, 40), map.get(4).?.*);
-    try std.testing.expectEqual(@as(u32, 50), map.get(5).?.*);
+    try std.testing.expectEqual(@as(u32, 10), map.getPtr(1).?.*);
+    try std.testing.expectEqual(@as(u32, 20), map.getPtr(2).?.*);
+    try std.testing.expectEqual(@as(u32, 30), map.getPtr(3).?.*);
+    try std.testing.expectEqual(@as(u32, 40), map.getPtr(4).?.*);
+    try std.testing.expectEqual(@as(u32, 50), map.getPtr(5).?.*);
 }
 
 test "capacity must be power of two" {
@@ -110,6 +110,6 @@ test "linear probing handles collisions" {
     // All should be retrievable
     for (keys, 0..) |key, i| {
         const expected: u32 = @intCast(i * 10);
-        try std.testing.expectEqual(expected, map.get(key).?.*);
+        try std.testing.expectEqual(expected, map.getPtr(key).?.*);
     }
 }
