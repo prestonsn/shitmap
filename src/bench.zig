@@ -368,7 +368,7 @@ fn benchGetIncreasing(allocator: std.mem.Allocator) !void {
         }
 
         const result = computeStats(&samples, config.ops_per_sample);
-        printResult("ShitMap increasing keys get()", result);
+        printResult("ShitMap increasing keys getPtr()", result);
     }
 
     // AutoHashMap get
