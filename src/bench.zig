@@ -8,6 +8,8 @@ pub fn main() !void {
     const allocator = gpa.allocator();
     std.debug.print("\n=== HashMap Benchmark ===\n", .{});
 
+    try benchGetMisses(allocator);
+    try benchGetMixed(allocator);
     try benchGetRandom(allocator);
     try benchGetIncreasing(allocator);
     try benchInsertIncreasing(allocator);
@@ -412,7 +414,7 @@ fn benchGetRandom(allocator: std.mem.Allocator) !void {
     const total_lookups = (config.warmup_samples + config.samples) * config.ops_per_sample;
     const prealloc_size = std.math.ceilPowerOfTwo(usize, map_size * 2) catch unreachable;
 
-    std.debug.print("--- Random Access get() ---\n", .{});
+    std.debug.print("--- Random Access getPtr() ---\n", .{});
     std.debug.print("Config: {} samples × {}M ops ({} warmup), map size: {}M keys\n", .{
         config.samples,
         config.ops_per_sample / 1_000_000,
@@ -499,7 +501,212 @@ fn benchGetRandom(allocator: std.mem.Allocator) !void {
             sample.* = timer.read();
         }
         const result = computeStats(&samples, config.ops_per_sample);
-        printResult("AutoHashMap random access get()", result);
+        printResult("AutoHashMap random access getPtr()", result);
+    }
+
+    std.debug.print("\n", .{});
+}
+
+fn benchGetMisses(allocator: std.mem.Allocator) !void {
+    const config = BenchmarkConfig{};
+    const map_size: usize = 1_000_000; // Fixed map size
+    const total_lookups = (config.warmup_samples + config.samples) * config.ops_per_sample;
+    const prealloc_size = std.math.ceilPowerOfTwo(usize, map_size * 2) catch unreachable;
+
+    std.debug.print("--- getPtr() All Misses ---\n", .{});
+    std.debug.print("Config: {} samples × {}M ops ({} warmup), map size: {}M keys\n", .{
+        config.samples,
+        config.ops_per_sample / 1_000_000,
+        config.warmup_samples,
+        map_size / 1_000_000,
+    });
+    std.debug.print("Generating random keys...\n\n", .{});
+
+    // Pre-generate random keys for the map (even numbers)
+    const keys = try allocator.alloc(u64, map_size);
+    defer allocator.free(keys);
+    var prng = std.Random.DefaultPrng.init(0xdeadbeef);
+    const random = prng.random();
+    for (keys) |*k| {
+        k.* = random.int(u64) | 1; // Make all keys odd
+    }
+
+    // Pre-generate lookup keys that will never be in the map (even numbers)
+    const miss_keys = try allocator.alloc(u64, total_lookups);
+    defer allocator.free(miss_keys);
+    for (miss_keys) |*k| {
+        k.* = random.int(u64) & ~@as(u64, 1); // Make all lookup keys even
+    }
+
+    // ShitMap benchmark
+    {
+        var samples: [config.samples]u64 = undefined;
+        var lookup_idx: usize = 0;
+        var map = try ziggypoo.ShitMap(u64, u64, .{ .growable = true }).init(allocator, prealloc_size);
+        defer map.deinit();
+
+        // Populate map with odd keys
+        for (keys) |key| {
+            try map.insert(key, key);
+        }
+
+        // Warmup
+        for (0..config.warmup_samples) |_| {
+            for (0..config.ops_per_sample) |_| {
+                std.mem.doNotOptimizeAway(map.getPtr(miss_keys[lookup_idx]));
+                lookup_idx += 1;
+            }
+        }
+
+        for (&samples) |*sample| {
+            var timer = try Timer.start();
+            for (0..config.ops_per_sample) |_| {
+                std.mem.doNotOptimizeAway(map.getPtr(miss_keys[lookup_idx]));
+                lookup_idx += 1;
+            }
+            sample.* = timer.read();
+        }
+        const result = computeStats(&samples, config.ops_per_sample);
+        printResult("ShitMap getPtr() all misses", result);
+    }
+
+    // AutoHashMap benchmark
+    {
+        var samples: [config.samples]u64 = undefined;
+        var lookup_idx: usize = 0;
+        var map = std.AutoHashMap(u64, u64).init(allocator);
+        defer map.deinit();
+        try map.ensureTotalCapacity(@intCast(prealloc_size));
+
+        // Populate map with odd keys
+        for (keys) |key| {
+            try map.put(key, key);
+        }
+
+        // Warmup
+        for (0..config.warmup_samples) |_| {
+            for (0..config.ops_per_sample) |_| {
+                std.mem.doNotOptimizeAway(map.get(miss_keys[lookup_idx]));
+                lookup_idx += 1;
+            }
+        }
+
+        for (&samples) |*sample| {
+            var timer = try Timer.start();
+            for (0..config.ops_per_sample) |_| {
+                std.mem.doNotOptimizeAway(map.get(miss_keys[lookup_idx]));
+                lookup_idx += 1;
+            }
+            sample.* = timer.read();
+        }
+        const result = computeStats(&samples, config.ops_per_sample);
+        printResult("AutoHashMap get() all misses", result);
+    }
+
+    std.debug.print("\n", .{});
+}
+
+fn benchGetMixed(allocator: std.mem.Allocator) !void {
+    const config = BenchmarkConfig{};
+    const map_size: usize = 1_000_000;
+    const total_lookups = (config.warmup_samples + config.samples) * config.ops_per_sample;
+    const prealloc_size = std.math.ceilPowerOfTwo(usize, map_size * 2) catch unreachable;
+
+    std.debug.print("--- getPtr() Mixed Hits/Misses (50%%) ---\n", .{});
+    std.debug.print("Config: {} samples × {}M ops ({} warmup), map size: {}M keys\n", .{
+        config.samples,
+        config.ops_per_sample / 1_000_000,
+        config.warmup_samples,
+        map_size / 1_000_000,
+    });
+    std.debug.print("Generating random keys and lookup pattern...\n\n", .{});
+
+    // Pre-generate random keys for the map
+    const keys = try allocator.alloc(u64, map_size);
+    defer allocator.free(keys);
+    var prng = std.Random.DefaultPrng.init(0xdeadbeef);
+    const random = prng.random();
+    for (keys) |*k| {
+        // Mak keys odd.
+        k.* = random.int(u64) | 1;
+    }
+
+    // Pre-generate lookup keys: 50% hits (from keys array), 50% misses (even numbers)
+    const lookup_keys = try allocator.alloc(u64, total_lookups);
+    defer allocator.free(lookup_keys);
+    for (lookup_keys) |*k| {
+        if (random.boolean()) {
+            // Hit: pick a key from the map
+            k.* = keys[random.intRangeLessThan(usize, 0, map_size)];
+        } else {
+            // Miss: generate an even number (guaranteed not in map)
+            k.* = random.int(u64) & ~@as(u64, 1);
+        }
+    }
+
+    // ShitMap benchmark
+    {
+        var samples: [config.samples]u64 = undefined;
+        var lookup_idx: usize = 0;
+        var map = try ziggypoo.ShitMap(u64, u64, .{ .growable = true }).init(allocator, prealloc_size);
+        defer map.deinit();
+
+        // Populate map
+        for (keys) |key| {
+            try map.insert(key, key);
+        }
+
+        // Warmup
+        for (0..config.warmup_samples) |_| {
+            for (0..config.ops_per_sample) |_| {
+                std.mem.doNotOptimizeAway(map.getPtr(lookup_keys[lookup_idx]));
+                lookup_idx += 1;
+            }
+        }
+
+        for (&samples) |*sample| {
+            var timer = try Timer.start();
+            for (0..config.ops_per_sample) |_| {
+                std.mem.doNotOptimizeAway(map.getPtr(lookup_keys[lookup_idx]));
+                lookup_idx += 1;
+            }
+            sample.* = timer.read();
+        }
+        const result = computeStats(&samples, config.ops_per_sample);
+        printResult("ShitMap getPtr() mixed hits/misses", result);
+    }
+
+    // AutoHashMap benchmark
+    {
+        var samples: [config.samples]u64 = undefined;
+        var lookup_idx: usize = 0;
+        var map = std.AutoHashMap(u64, u64).init(allocator);
+        defer map.deinit();
+        try map.ensureTotalCapacity(@intCast(prealloc_size));
+
+        // Populate map
+        for (keys) |key| {
+            try map.put(key, key);
+        }
+
+        // Warmup
+        for (0..config.warmup_samples) |_| {
+            for (0..config.ops_per_sample) |_| {
+                std.mem.doNotOptimizeAway(map.get(lookup_keys[lookup_idx]));
+                lookup_idx += 1;
+            }
+        }
+
+        for (&samples) |*sample| {
+            var timer = try Timer.start();
+            for (0..config.ops_per_sample) |_| {
+                std.mem.doNotOptimizeAway(map.get(lookup_keys[lookup_idx]));
+                lookup_idx += 1;
+            }
+            sample.* = timer.read();
+        }
+        const result = computeStats(&samples, config.ops_per_sample);
+        printResult("AutoHashMap get() mixed hits/misses", result);
     }
 
     std.debug.print("\n", .{});
@@ -561,44 +768,3 @@ fn computeStats(samples: []u64, ops_per_sample: usize) BenchmarkResult {
         .sample_count = samples.len,
     };
 }
-
-// pub inline fn rdtscp_fenced() u64 {
-//     var hi: u32 = 0;
-//     var low: u32 = 0;
-//     const clob: u32 = undefined;
-
-//     asm (
-//         \\rdtscp
-//         \\mfence
-//         : [low] "={eax}" (low),
-//           [hi] "={edx}" (hi),
-//         : [clob] "={ecx}" (clob),
-//     );
-//     return (@as(u64, hi) << 32) | @as(u64, low);
-// }
-
-// pub inline fn rdtscp() u64 {
-//     var hi: u32 = undefined;
-//     var low: u32 = undefined;
-//     const clob: u32 = undefined;
-
-//     asm (
-//         \\rdtscp
-//         : [low] "={eax}" (low),
-//           [hi] "={edx}" (hi),
-//         : [clob] "={ecx}" (clob),
-//     );
-//     return (@as(u64, hi) << 32) | @as(u64, low);
-// }
-
-// pub inline fn rdtsc() u64 {
-//     var hi: u32 = 0;
-//     var low: u32 = 0;
-
-//     asm (
-//         \\rdtsc
-//         : [low] "={eax}" (low),
-//           [hi] "={edx}" (hi),
-//     );
-//     return (@as(u64, hi) << 32) | @as(u64, low);
-// }

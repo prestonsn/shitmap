@@ -4,7 +4,7 @@ const ziggypoo = @import("ziggypoo");
 pub fn main() !void {}
 
 test "simple test" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
@@ -29,7 +29,7 @@ test "simple test" {
 }
 
 test "remove returns value and allows re-insert" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
     var map = try ziggypoo.ShitMap(u32, u32, .{ .growable = false }).init(allocator, 16);
@@ -49,7 +49,7 @@ test "remove returns value and allows re-insert" {
 }
 
 test "static map returns MapFull error" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
     var map = try ziggypoo.ShitMap(u32, u32, .{ .growable = false }).init(allocator, 4);
@@ -65,7 +65,7 @@ test "static map returns MapFull error" {
 }
 
 test "growable map auto-resizes" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
     var map = try ziggypoo.ShitMap(u32, u32, .{ .growable = true, .load_factor = 0.5 }).init(allocator, 4);
@@ -88,7 +88,7 @@ test "growable map auto-resizes" {
 }
 
 test "capacity must be power of two" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
     const result = ziggypoo.ShitMap(u32, u32, .{}).init(allocator, 15);
@@ -96,7 +96,7 @@ test "capacity must be power of two" {
 }
 
 test "linear probing handles collisions" {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var gpa = std.heap.DebugAllocator(.{}){};
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
     // Small capacity to force collisions
