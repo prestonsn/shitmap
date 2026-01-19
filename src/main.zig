@@ -113,3 +113,81 @@ test "linear probing handles collisions" {
         try std.testing.expectEqual(expected, map.getPtr(key).?.*);
     }
 }
+
+test "simd getPtr works correctly" {
+    var gpa = std.heap.DebugAllocator(.{}){};
+    defer _ = gpa.deinit();
+    const allocator = gpa.allocator();
+
+    var map = try ziggypoo.ShitMap(u64, u64, .{ .growable = false, .simd_get = true }).init(allocator, 64);
+    defer map.deinit();
+
+    // Insert keys spread across the map
+    const keys = [_]u64{ 1, 2, 3, 10, 20, 30, 100, 200, 300, 1000, 2000, 3000 };
+    for (keys, 0..) |key, i| {
+        try map.insert(key, @intCast(i * 100));
+    }
+
+    // All should be retrievable via SIMD path
+    for (keys, 0..) |key, i| {
+        const expected: u64 = @intCast(i * 100);
+        const result = map.getPtr(key);
+        try std.testing.expect(result != null);
+        try std.testing.expectEqual(expected, result.?.*);
+    }
+
+    // Non-existent keys should return null
+    try std.testing.expectEqual(@as(?*u64, null), map.getPtr(99999));
+    try std.testing.expectEqual(@as(?*u64, null), map.getPtr(0));
+    try std.testing.expectEqual(@as(?*u64, null), map.getPtr(50));
+}
+
+test "simd getPtr handles hash collisions" {
+    var gpa = std.heap.DebugAllocator(.{}){};
+    defer _ = gpa.deinit();
+    const allocator = gpa.allocator();
+
+    var map = try ziggypoo.ShitMap(u64, u64, .{ .growable = false, .simd_get = true }).init(allocator, 16);
+    defer map.deinit();
+
+    for (0..10) |i| {
+        try map.insert(i, i * 10);
+    }
+
+    for (0..10) |i| {
+        const result = map.getPtr(i);
+        try std.testing.expect(result != null);
+        try std.testing.expectEqual(i * 10, result.?.*);
+    }
+
+    // Test miss
+    try std.testing.expectEqual(@as(?*u64, null), map.getPtr(999));
+}
+
+test "simd getPtr with tombstones" {
+    var gpa = std.heap.DebugAllocator(.{}){};
+    defer _ = gpa.deinit();
+    const allocator = gpa.allocator();
+
+    var map = try ziggypoo.ShitMap(u64, u64, .{ .growable = false, .simd_get = true }).init(allocator, 32);
+    defer map.deinit();
+
+    for (0..20) |i| {
+        try map.insert(i, i * 10);
+    }
+
+    _ = map.remove(5);
+    _ = map.remove(10);
+    _ = map.remove(15);
+
+    try std.testing.expectEqual(@as(u64, 0), map.getPtr(0).?.*);
+    try std.testing.expectEqual(@as(u64, 40), map.getPtr(4).?.*);
+    try std.testing.expectEqual(@as(u64, 60), map.getPtr(6).?.*);
+    try std.testing.expectEqual(@as(u64, 140), map.getPtr(14).?.*);
+    try std.testing.expectEqual(@as(u64, 190), map.getPtr(19).?.*);
+
+    // Removed keys should return null
+    try std.testing.expectEqual(@as(?*u64, null), map.getPtr(5));
+    try std.testing.expectEqual(@as(?*u64, null), map.getPtr(10));
+    try std.testing.expectEqual(@as(?*u64, null), map.getPtr(15));
+}

@@ -2,428 +2,52 @@ const std = @import("std");
 const ziggypoo = @import("ziggypoo");
 const Timer = std.time.Timer;
 
+const ShitMapConfig = ziggypoo.ShitMapConfig;
+
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
-    std.debug.print("\n=== HashMap Benchmark ===\n", .{});
 
-    try benchGetMisses(allocator);
-    try benchGetMixed(allocator);
-    try benchGetRandom(allocator);
-    try benchGetIncreasing(allocator);
-    try benchInsertIncreasing(allocator);
-    try benchInsertRandom(allocator);
-    try benchInsertIncreasingPrealloc(allocator);
-    try benchInsertRandomPrealloc(allocator);
+    const configs = .{
+        .{ .name = "scalar", .config = ShitMapConfig{ .growable = true } },
+        .{ .name = "simd", .config = ShitMapConfig{ .growable = true, .simd_get = true } },
+    };
+
+    inline for (configs) |cfg| {
+        std.debug.print("\n=== ShitMap Benchmark ({s}) ===\n", .{cfg.name});
+        try benchGetRandom(allocator, cfg.name, cfg.config);
+        try benchGetMisses(allocator, cfg.name, cfg.config);
+        try benchGetMixed(allocator, cfg.name, cfg.config);
+    }
+
+    // AutoHashMap baseline (only once)
+    std.debug.print("\n=== AutoHashMap Baseline ===\n", .{});
+    try benchGetRandomAutoHashMap(allocator);
+    try benchGetMissesAutoHashMap(allocator);
+    try benchGetMixedAutoHashMap(allocator);
 }
 
-const BenchmarkConfig = struct {
+const RunConfig = struct {
     samples: usize = 50,
     warmup_samples: usize = 3,
     ops_per_sample: usize = 5_000_000,
 };
 
-fn benchInsertIncreasing(allocator: std.mem.Allocator) !void {
-    const config = BenchmarkConfig{};
-
-    std.debug.print("\n--- Increasing Keys insert() ---\n", .{});
-    std.debug.print("Config: {} samples × {}M ops ({} warmup)\n\n", .{
-        config.samples,
-        config.ops_per_sample / 1_000_000,
-        config.warmup_samples,
-    });
-
-    // ShitMap benchmark
-    {
-        var samples: [config.samples]u64 = undefined;
-        var key_offset: u64 = 0;
-        var map = try ziggypoo.ShitMap(u64, u64, .{ .growable = true }).init(allocator, 2);
-        defer map.deinit();
-
-        for (0..config.warmup_samples) |_| {
-            for (0..config.ops_per_sample) |i| {
-                try map.insert(key_offset + i, i * 10);
-            }
-            key_offset += config.ops_per_sample;
-        }
-
-        for (&samples) |*sample| {
-            var timer = try Timer.start();
-            for (0..config.ops_per_sample) |i| {
-                try map.insert(key_offset + i, i * 10);
-            }
-            sample.* = timer.read();
-            key_offset += config.ops_per_sample;
-        }
-        const result = computeStats(&samples, config.ops_per_sample);
-        printResult("Increasing Keys -- ShitMap insert", result);
-    }
-
-    // AutoHashmap
-    {
-        var samples: [config.samples]u64 = undefined;
-        var key_offset: u64 = 0;
-        var map = std.AutoHashMap(u64, u64).init(allocator);
-        defer map.deinit();
-        try map.ensureTotalCapacity(2);
-
-        for (0..config.warmup_samples) |_| {
-            for (0..config.ops_per_sample) |i| {
-                try map.put(key_offset + i, i * 10);
-            }
-            key_offset += config.ops_per_sample;
-        }
-        for (&samples) |*sample| {
-            var timer = try Timer.start();
-            for (0..config.ops_per_sample) |i| {
-                try map.put(key_offset + i, i * 10);
-            }
-            sample.* = timer.read();
-            key_offset += config.ops_per_sample;
-        }
-        const result = computeStats(&samples, config.ops_per_sample);
-        printResult("Increasing Keys -- AutoHashMap put", result);
-    }
-
-    std.debug.print("\n", .{});
-}
-
-fn benchInsertRandom(allocator: std.mem.Allocator) !void {
-    const config = BenchmarkConfig{};
-    const total_keys = (config.warmup_samples + config.samples) * config.ops_per_sample;
-
-    std.debug.print("--- Random Keys insert() ---\n", .{});
-    std.debug.print("Config: {} samples × {}M ops ({} warmup)\n", .{
-        config.samples,
-        config.ops_per_sample / 1_000_000,
-        config.warmup_samples,
-    });
-    std.debug.print("Generating {} random keys...\n\n", .{total_keys});
-
-    // Pre-generate random keys
-    const keys = try allocator.alloc(u64, total_keys);
-    defer allocator.free(keys);
-    var prng = std.Random.DefaultPrng.init(0xdeadbeef);
-    const random = prng.random();
-    for (keys) |*k| {
-        k.* = random.int(u64);
-    }
-
-    // ShitMap benchmark
-    {
-        var samples: [config.samples]u64 = undefined;
-        var key_idx: usize = 0;
-        var map = try ziggypoo.ShitMap(u64, u64, .{ .growable = true }).init(allocator, 2);
-        defer map.deinit();
-
-        for (0..config.warmup_samples) |_| {
-            for (0..config.ops_per_sample) |_| {
-                try map.insert(keys[key_idx], key_idx);
-                key_idx += 1;
-            }
-        }
-
-        for (&samples) |*sample| {
-            var timer = try Timer.start();
-            for (0..config.ops_per_sample) |_| {
-                try map.insert(keys[key_idx], key_idx);
-                key_idx += 1;
-            }
-            sample.* = timer.read();
-        }
-        const result = computeStats(&samples, config.ops_per_sample);
-        printResult("ShitMap insert", result);
-    }
-
-    // AutoHashMap benchmark
-    {
-        var samples: [config.samples]u64 = undefined;
-        var key_idx: usize = 0;
-        var map = std.AutoHashMap(u64, u64).init(allocator);
-        defer map.deinit();
-        try map.ensureTotalCapacity(2);
-
-        for (0..config.warmup_samples) |_| {
-            for (0..config.ops_per_sample) |_| {
-                try map.put(keys[key_idx], key_idx);
-                key_idx += 1;
-            }
-        }
-
-        for (&samples) |*sample| {
-            var timer = try Timer.start();
-            for (0..config.ops_per_sample) |_| {
-                try map.put(keys[key_idx], key_idx);
-                key_idx += 1;
-            }
-            sample.* = timer.read();
-        }
-        const result = computeStats(&samples, config.ops_per_sample);
-        printResult("AutoHashMap put", result);
-    }
-
-    std.debug.print("\n", .{});
-}
-
-fn benchInsertIncreasingPrealloc(allocator: std.mem.Allocator) !void {
-    const config = BenchmarkConfig{};
-    const total_ops = (config.warmup_samples + config.samples) * config.ops_per_sample;
-
-    // Round up to next power of two, with headroom for load factor
-    const prealloc_size = std.math.ceilPowerOfTwo(usize, total_ops * 2) catch unreachable;
-    std.debug.print("--- Increasing Keys insert() (Preallocated) ---\n", .{});
-    std.debug.print("Config: {} samples × {}M ops ({} warmup), preallocated {}M slots\n\n", .{
-        config.samples,
-        config.ops_per_sample / 1_000_000,
-        config.warmup_samples,
-        prealloc_size / 1_000_000,
-    });
-
-    // ShitMap benchmark
-    {
-        var samples: [config.samples]u64 = undefined;
-        var key_offset: u64 = 0;
-        var map = try ziggypoo.ShitMap(u64, u64, .{ .growable = true }).init(allocator, prealloc_size);
-        defer map.deinit();
-
-        for (0..config.warmup_samples) |_| {
-            for (0..config.ops_per_sample) |i| {
-                try map.insert(key_offset + i, i * 10);
-            }
-            key_offset += config.ops_per_sample;
-        }
-
-        for (&samples) |*sample| {
-            var timer = try Timer.start();
-            for (0..config.ops_per_sample) |i| {
-                try map.insert(key_offset + i, i * 10);
-            }
-            sample.* = timer.read();
-            key_offset += config.ops_per_sample;
-        }
-
-        const result = computeStats(&samples, config.ops_per_sample);
-        printResult("ShitMap insert", result);
-    }
-
-    // AutoHashMap
-    {
-        var samples: [config.samples]u64 = undefined;
-        var key_offset: u64 = 0;
-        var map = std.AutoHashMap(u64, u64).init(allocator);
-        defer map.deinit();
-        try map.ensureTotalCapacity(@intCast(prealloc_size));
-
-        for (0..config.warmup_samples) |_| {
-            for (0..config.ops_per_sample) |i| {
-                try map.put(key_offset + i, i * 10);
-            }
-
-            key_offset += config.ops_per_sample;
-        }
-
-        for (&samples) |*sample| {
-            var timer = try Timer.start();
-            for (0..config.ops_per_sample) |i| {
-                try map.put(key_offset + i, i * 10);
-            }
-            sample.* = timer.read();
-            key_offset += config.ops_per_sample;
-        }
-
-        const result = computeStats(&samples, config.ops_per_sample);
-        printResult("AutoHashMap put", result);
-    }
-
-    std.debug.print("\n", .{});
-}
-
-fn benchInsertRandomPrealloc(allocator: std.mem.Allocator) !void {
-    const config = BenchmarkConfig{};
-    const total_keys = (config.warmup_samples + config.samples) * config.ops_per_sample;
-
-    // Round up to next power of two, with headroom for load factor
-    const prealloc_size = std.math.ceilPowerOfTwo(usize, total_keys * 2) catch unreachable;
-    std.debug.print("--- Random Keys insert() (Preallocated) ---\n", .{});
-    std.debug.print("Config: {} samples × {}M ops ({} warmup), preallocated {}M slots\n", .{
-        config.samples,
-        config.ops_per_sample / 1_000_000,
-        config.warmup_samples,
-        prealloc_size / 1_000_000,
-    });
-
-    std.debug.print("Generating {} random keys...\n\n", .{total_keys});
-    // Pre-generate random keys
-    const keys = try allocator.alloc(u64, total_keys);
-    defer allocator.free(keys);
-    var prng = std.Random.DefaultPrng.init(0xdeadbeef);
-    const random = prng.random();
-    for (keys) |*k| {
-        k.* = random.int(u64);
-    }
-
-    // ShitMap benchmark
-    {
-        var samples: [config.samples]u64 = undefined;
-        var key_idx: usize = 0;
-        var map = try ziggypoo.ShitMap(u64, u64, .{ .growable = true }).init(allocator, prealloc_size);
-        defer map.deinit();
-
-        for (0..config.warmup_samples) |_| {
-            for (0..config.ops_per_sample) |_| {
-                try map.insert(keys[key_idx], key_idx);
-                key_idx += 1;
-            }
-        }
-
-        for (&samples) |*sample| {
-            var timer = try Timer.start();
-            for (0..config.ops_per_sample) |_| {
-                try map.insert(keys[key_idx], key_idx);
-                key_idx += 1;
-            }
-            sample.* = timer.read();
-        }
-
-        const result = computeStats(&samples, config.ops_per_sample);
-        printResult("ShitMap insert", result);
-    }
-
-    // AutoHashMap benchmark
-    {
-        var samples: [config.samples]u64 = undefined;
-        var key_idx: usize = 0;
-        var map = std.AutoHashMap(u64, u64).init(allocator);
-        defer map.deinit();
-        try map.ensureTotalCapacity(@intCast(prealloc_size));
-
-        for (0..config.warmup_samples) |_| {
-            for (0..config.ops_per_sample) |_| {
-                try map.put(keys[key_idx], key_idx);
-                key_idx += 1;
-            }
-        }
-
-        for (&samples) |*sample| {
-            var timer = try Timer.start();
-            for (0..config.ops_per_sample) |_| {
-                try map.put(keys[key_idx], key_idx);
-                key_idx += 1;
-            }
-            sample.* = timer.read();
-        }
-
-        const result = computeStats(&samples, config.ops_per_sample);
-        printResult("AutoHashMap put", result);
-    }
-
-    std.debug.print("\n", .{});
-}
-
-fn benchGetIncreasing(allocator: std.mem.Allocator) !void {
-    const config = BenchmarkConfig{};
-    const total_keys = (config.warmup_samples + config.samples) * config.ops_per_sample;
-
-    std.debug.print("--- Increasing Keys get() ---\n", .{});
-    std.debug.print("Config: {} samples × {}M ops ({} warmup)\n\n", .{
-        config.samples,
-        config.ops_per_sample / 1_000_000,
-        config.warmup_samples,
-    });
-
-    const keys = try allocator.alloc(u64, total_keys);
-    defer allocator.free(keys);
-
-    for (keys, 0..) |*key, i| {
-        key.* = i;
-    }
-
-    // ShitMap get
-    {
-        var map = try ziggypoo.ShitMap(u64, u64, .{ .growable = true }).init(allocator, 2);
-        defer map.deinit();
-
-        // Pre-populate the map with keys
-        for (keys) |key| {
-            try map.insert(key, key);
-        }
-
-        // Warmup
-        var key_idx: usize = 0;
-        for (0..config.warmup_samples) |_| {
-            for (0..config.ops_per_sample) |_| {
-                std.mem.doNotOptimizeAway(map.getPtr(keys[key_idx]));
-                key_idx += 1;
-            }
-        }
-
-        var samples: [config.samples]u64 = undefined;
-
-        for (&samples) |*sample| {
-            var timer = try Timer.start();
-            for (0..config.ops_per_sample) |_| {
-                std.mem.doNotOptimizeAway(map.getPtr(keys[key_idx]));
-                key_idx += 1;
-            }
-            sample.* = timer.read();
-        }
-
-        const result = computeStats(&samples, config.ops_per_sample);
-        printResult("ShitMap increasing keys getPtr()", result);
-    }
-
-    // AutoHashMap get
-    {
-        var map = std.AutoHashMap(u64, u64).init(allocator);
-        defer map.deinit();
-
-        // Pre-populate the map with keys
-        for (keys) |key| {
-            try map.put(key, key);
-        }
-
-        // Warmup
-        var key_idx: usize = 0;
-        for (0..config.warmup_samples) |_| {
-            for (0..config.ops_per_sample) |_| {
-                std.mem.doNotOptimizeAway(map.getPtr(keys[key_idx]));
-                key_idx += 1;
-            }
-        }
-
-        var samples: [config.samples]u64 = undefined;
-
-        for (&samples) |*sample| {
-            var timer = try Timer.start();
-            for (0..config.ops_per_sample) |_| {
-                std.mem.doNotOptimizeAway(map.getPtr(keys[key_idx]));
-                key_idx += 1;
-            }
-            sample.* = timer.read();
-        }
-
-        const result = computeStats(&samples, config.ops_per_sample);
-        printResult("AutoHashMap increasing keys get()", result);
-    }
-}
-
-fn benchGetRandom(allocator: std.mem.Allocator) !void {
-    const config = BenchmarkConfig{};
-    const map_size: usize = 1_000_000; // Fixed map size
+fn benchGetRandom(allocator: std.mem.Allocator, name: []const u8, comptime map_config: ShitMapConfig) !void {
+    const config = RunConfig{};
+    const map_size: usize = 1_000_000;
     const total_lookups = (config.warmup_samples + config.samples) * config.ops_per_sample;
     const prealloc_size = std.math.ceilPowerOfTwo(usize, map_size * 2) catch unreachable;
 
-    std.debug.print("--- Random Access getPtr() ---\n", .{});
-    std.debug.print("Config: {} samples × {}M ops ({} warmup), map size: {}M keys\n", .{
+    std.debug.print("\n--- Random Access getPtr() ({s}) ---\n", .{name});
+    std.debug.print("Config: {} samples × {}M ops ({} warmup), map size: {}M keys\n\n", .{
         config.samples,
         config.ops_per_sample / 1_000_000,
         config.warmup_samples,
         map_size / 1_000_000,
     });
-    std.debug.print("Generating random keys and lookup indices...\n\n", .{});
 
-    // Pre-generate random keys for the map
     const keys = try allocator.alloc(u64, map_size);
     defer allocator.free(keys);
     var prng = std.Random.DefaultPrng.init(0xdeadbeef);
@@ -432,287 +56,325 @@ fn benchGetRandom(allocator: std.mem.Allocator) !void {
         k.* = random.int(u64);
     }
 
-    // Pre-generate random lookup indices (indices into the keys array)
     const lookup_indices = try allocator.alloc(usize, total_lookups);
     defer allocator.free(lookup_indices);
     for (lookup_indices) |*idx| {
         idx.* = random.intRangeLessThan(usize, 0, map_size);
     }
 
-    // ShitMap benchmark
-    {
-        var samples: [config.samples]u64 = undefined;
-        var lookup_idx: usize = 0;
-        var map = try ziggypoo.ShitMap(u64, u64, .{ .growable = true }).init(allocator, prealloc_size);
-        defer map.deinit();
+    var samples: [config.samples]u64 = undefined;
+    var lookup_idx: usize = 0;
+    var map = try ziggypoo.ShitMap(u64, u64, map_config).init(allocator, prealloc_size);
+    defer map.deinit();
 
-        // Populate map
-        for (keys) |key| {
-            try map.insert(key, key);
-        }
-
-        // Warmup
-        for (0..config.warmup_samples) |_| {
-            for (0..config.ops_per_sample) |_| {
-                std.mem.doNotOptimizeAway(map.getPtr(keys[lookup_indices[lookup_idx]]));
-                lookup_idx += 1;
-            }
-        }
-
-        for (&samples) |*sample| {
-            var timer = try Timer.start();
-            for (0..config.ops_per_sample) |_| {
-                std.mem.doNotOptimizeAway(map.getPtr(keys[lookup_indices[lookup_idx]]));
-                lookup_idx += 1;
-            }
-            sample.* = timer.read();
-        }
-        const result = computeStats(&samples, config.ops_per_sample);
-        printResult("ShitMap random access getPtr()", result);
+    for (keys) |key| {
+        try map.insert(key, key);
     }
 
-    // AutoHashMap benchmark
-    {
-        var samples: [config.samples]u64 = undefined;
-        var lookup_idx: usize = 0;
-        var map = std.AutoHashMap(u64, u64).init(allocator);
-        defer map.deinit();
-        try map.ensureTotalCapacity(@intCast(prealloc_size));
-
-        // Populate map
-        for (keys) |key| {
-            try map.put(key, key);
+    for (0..config.warmup_samples) |_| {
+        for (0..config.ops_per_sample) |_| {
+            std.mem.doNotOptimizeAway(map.getPtr(keys[lookup_indices[lookup_idx]]));
+            lookup_idx += 1;
         }
-
-        // Warmup
-        for (0..config.warmup_samples) |_| {
-            for (0..config.ops_per_sample) |_| {
-                std.mem.doNotOptimizeAway(map.getPtr(keys[lookup_indices[lookup_idx]]));
-                lookup_idx += 1;
-            }
-        }
-
-        for (&samples) |*sample| {
-            var timer = try Timer.start();
-            for (0..config.ops_per_sample) |_| {
-                std.mem.doNotOptimizeAway(map.getPtr(keys[lookup_indices[lookup_idx]]));
-                lookup_idx += 1;
-            }
-            sample.* = timer.read();
-        }
-        const result = computeStats(&samples, config.ops_per_sample);
-        printResult("AutoHashMap random access getPtr()", result);
     }
 
-    std.debug.print("\n", .{});
+    for (&samples) |*sample| {
+        var timer = try Timer.start();
+        for (0..config.ops_per_sample) |_| {
+            std.mem.doNotOptimizeAway(map.getPtr(keys[lookup_indices[lookup_idx]]));
+            lookup_idx += 1;
+        }
+        sample.* = timer.read();
+    }
+    const result = computeStats(&samples, config.ops_per_sample);
+    printResult("ShitMap random access getPtr()", result);
 }
 
-fn benchGetMisses(allocator: std.mem.Allocator) !void {
-    const config = BenchmarkConfig{};
-    const map_size: usize = 1_000_000; // Fixed map size
-    const total_lookups = (config.warmup_samples + config.samples) * config.ops_per_sample;
-    const prealloc_size = std.math.ceilPowerOfTwo(usize, map_size * 2) catch unreachable;
-
-    std.debug.print("--- getPtr() All Misses ---\n", .{});
-    std.debug.print("Config: {} samples × {}M ops ({} warmup), map size: {}M keys\n", .{
-        config.samples,
-        config.ops_per_sample / 1_000_000,
-        config.warmup_samples,
-        map_size / 1_000_000,
-    });
-    std.debug.print("Generating random keys...\n\n", .{});
-
-    // Pre-generate random keys for the map (even numbers)
-    const keys = try allocator.alloc(u64, map_size);
-    defer allocator.free(keys);
-    var prng = std.Random.DefaultPrng.init(0xdeadbeef);
-    const random = prng.random();
-    for (keys) |*k| {
-        k.* = random.int(u64) | 1; // Make all keys odd
-    }
-
-    // Pre-generate lookup keys that will never be in the map (even numbers)
-    const miss_keys = try allocator.alloc(u64, total_lookups);
-    defer allocator.free(miss_keys);
-    for (miss_keys) |*k| {
-        k.* = random.int(u64) & ~@as(u64, 1); // Make all lookup keys even
-    }
-
-    // ShitMap benchmark
-    {
-        var samples: [config.samples]u64 = undefined;
-        var lookup_idx: usize = 0;
-        var map = try ziggypoo.ShitMap(u64, u64, .{ .growable = true }).init(allocator, prealloc_size);
-        defer map.deinit();
-
-        // Populate map with odd keys
-        for (keys) |key| {
-            try map.insert(key, key);
-        }
-
-        // Warmup
-        for (0..config.warmup_samples) |_| {
-            for (0..config.ops_per_sample) |_| {
-                std.mem.doNotOptimizeAway(map.getPtr(miss_keys[lookup_idx]));
-                lookup_idx += 1;
-            }
-        }
-
-        for (&samples) |*sample| {
-            var timer = try Timer.start();
-            for (0..config.ops_per_sample) |_| {
-                std.mem.doNotOptimizeAway(map.getPtr(miss_keys[lookup_idx]));
-                lookup_idx += 1;
-            }
-            sample.* = timer.read();
-        }
-        const result = computeStats(&samples, config.ops_per_sample);
-        printResult("ShitMap getPtr() all misses", result);
-    }
-
-    // AutoHashMap benchmark
-    {
-        var samples: [config.samples]u64 = undefined;
-        var lookup_idx: usize = 0;
-        var map = std.AutoHashMap(u64, u64).init(allocator);
-        defer map.deinit();
-        try map.ensureTotalCapacity(@intCast(prealloc_size));
-
-        // Populate map with odd keys
-        for (keys) |key| {
-            try map.put(key, key);
-        }
-
-        // Warmup
-        for (0..config.warmup_samples) |_| {
-            for (0..config.ops_per_sample) |_| {
-                std.mem.doNotOptimizeAway(map.get(miss_keys[lookup_idx]));
-                lookup_idx += 1;
-            }
-        }
-
-        for (&samples) |*sample| {
-            var timer = try Timer.start();
-            for (0..config.ops_per_sample) |_| {
-                std.mem.doNotOptimizeAway(map.get(miss_keys[lookup_idx]));
-                lookup_idx += 1;
-            }
-            sample.* = timer.read();
-        }
-        const result = computeStats(&samples, config.ops_per_sample);
-        printResult("AutoHashMap get() all misses", result);
-    }
-
-    std.debug.print("\n", .{});
-}
-
-fn benchGetMixed(allocator: std.mem.Allocator) !void {
-    const config = BenchmarkConfig{};
+fn benchGetMisses(allocator: std.mem.Allocator, name: []const u8, comptime map_config: ShitMapConfig) !void {
+    const config = RunConfig{};
     const map_size: usize = 1_000_000;
     const total_lookups = (config.warmup_samples + config.samples) * config.ops_per_sample;
     const prealloc_size = std.math.ceilPowerOfTwo(usize, map_size * 2) catch unreachable;
 
-    std.debug.print("--- getPtr() Mixed Hits/Misses (50%%) ---\n", .{});
-    std.debug.print("Config: {} samples × {}M ops ({} warmup), map size: {}M keys\n", .{
+    std.debug.print("\n--- getPtr() All Misses ({s}) ---\n", .{name});
+    std.debug.print("Config: {} samples × {}M ops ({} warmup), map size: {}M keys\n\n", .{
         config.samples,
         config.ops_per_sample / 1_000_000,
         config.warmup_samples,
         map_size / 1_000_000,
     });
-    std.debug.print("Generating random keys and lookup pattern...\n\n", .{});
 
-    // Pre-generate random keys for the map
     const keys = try allocator.alloc(u64, map_size);
     defer allocator.free(keys);
     var prng = std.Random.DefaultPrng.init(0xdeadbeef);
     const random = prng.random();
     for (keys) |*k| {
-        // Mak keys odd.
-        k.* = random.int(u64) | 1;
+        k.* = random.int(u64) | 1; // odd keys in map
     }
 
-    // Pre-generate lookup keys: 50% hits (from keys array), 50% misses (even numbers)
+    const miss_keys = try allocator.alloc(u64, total_lookups);
+    defer allocator.free(miss_keys);
+    for (miss_keys) |*k| {
+        k.* = random.int(u64) & ~@as(u64, 1); // even keys for lookup (guaranteed miss)
+    }
+
+    var samples: [config.samples]u64 = undefined;
+    var lookup_idx: usize = 0;
+    var map = try ziggypoo.ShitMap(u64, u64, map_config).init(allocator, prealloc_size);
+    defer map.deinit();
+
+    for (keys) |key| {
+        try map.insert(key, key);
+    }
+
+    for (0..config.warmup_samples) |_| {
+        for (0..config.ops_per_sample) |_| {
+            std.mem.doNotOptimizeAway(map.getPtr(miss_keys[lookup_idx]));
+            lookup_idx += 1;
+        }
+    }
+
+    for (&samples) |*sample| {
+        var timer = try Timer.start();
+        for (0..config.ops_per_sample) |_| {
+            std.mem.doNotOptimizeAway(map.getPtr(miss_keys[lookup_idx]));
+            lookup_idx += 1;
+        }
+        sample.* = timer.read();
+    }
+    const result = computeStats(&samples, config.ops_per_sample);
+    printResult("ShitMap getPtr() all misses", result);
+}
+
+fn benchGetMixed(allocator: std.mem.Allocator, name: []const u8, comptime map_config: ShitMapConfig) !void {
+    const config = RunConfig{};
+    const map_size: usize = 1_000_000;
+    const total_lookups = (config.warmup_samples + config.samples) * config.ops_per_sample;
+    const prealloc_size = std.math.ceilPowerOfTwo(usize, map_size * 2) catch unreachable;
+
+    std.debug.print("\n--- getPtr() Mixed Hits/Misses 50%% ({s}) ---\n", .{name});
+    std.debug.print("Config: {} samples × {}M ops ({} warmup), map size: {}M keys\n\n", .{
+        config.samples,
+        config.ops_per_sample / 1_000_000,
+        config.warmup_samples,
+        map_size / 1_000_000,
+    });
+
+    const keys = try allocator.alloc(u64, map_size);
+    defer allocator.free(keys);
+    var prng = std.Random.DefaultPrng.init(0xdeadbeef);
+    const random = prng.random();
+    for (keys) |*k| {
+        k.* = random.int(u64) | 1; // odd keys
+    }
+
     const lookup_keys = try allocator.alloc(u64, total_lookups);
     defer allocator.free(lookup_keys);
     for (lookup_keys) |*k| {
         if (random.boolean()) {
-            // Hit: pick a key from the map
+            k.* = keys[random.intRangeLessThan(usize, 0, map_size)]; // hit
+        } else {
+            k.* = random.int(u64) & ~@as(u64, 1); // miss (even)
+        }
+    }
+
+    var samples: [config.samples]u64 = undefined;
+    var lookup_idx: usize = 0;
+    var map = try ziggypoo.ShitMap(u64, u64, map_config).init(allocator, prealloc_size);
+    defer map.deinit();
+
+    for (keys) |key| {
+        try map.insert(key, key);
+    }
+
+    for (0..config.warmup_samples) |_| {
+        for (0..config.ops_per_sample) |_| {
+            std.mem.doNotOptimizeAway(map.getPtr(lookup_keys[lookup_idx]));
+            lookup_idx += 1;
+        }
+    }
+
+    for (&samples) |*sample| {
+        var timer = try Timer.start();
+        for (0..config.ops_per_sample) |_| {
+            std.mem.doNotOptimizeAway(map.getPtr(lookup_keys[lookup_idx]));
+            lookup_idx += 1;
+        }
+        sample.* = timer.read();
+    }
+    const result = computeStats(&samples, config.ops_per_sample);
+    printResult("ShitMap getPtr() mixed hits/misses", result);
+}
+
+// AutoHashMap baselines
+
+fn benchGetRandomAutoHashMap(allocator: std.mem.Allocator) !void {
+    const config = RunConfig{};
+    const map_size: usize = 1_000_000;
+    const total_lookups = (config.warmup_samples + config.samples) * config.ops_per_sample;
+    const prealloc_size = std.math.ceilPowerOfTwo(usize, map_size * 2) catch unreachable;
+
+    std.debug.print("\n--- Random Access get() ---\n", .{});
+
+    const keys = try allocator.alloc(u64, map_size);
+    defer allocator.free(keys);
+    var prng = std.Random.DefaultPrng.init(0xdeadbeef);
+    const random = prng.random();
+    for (keys) |*k| {
+        k.* = random.int(u64);
+    }
+
+    const lookup_indices = try allocator.alloc(usize, total_lookups);
+    defer allocator.free(lookup_indices);
+    for (lookup_indices) |*idx| {
+        idx.* = random.intRangeLessThan(usize, 0, map_size);
+    }
+
+    var samples: [config.samples]u64 = undefined;
+    var lookup_idx: usize = 0;
+    var map = std.AutoHashMap(u64, u64).init(allocator);
+    defer map.deinit();
+    try map.ensureTotalCapacity(@intCast(prealloc_size));
+
+    for (keys) |key| {
+        try map.put(key, key);
+    }
+
+    for (0..config.warmup_samples) |_| {
+        for (0..config.ops_per_sample) |_| {
+            std.mem.doNotOptimizeAway(map.get(keys[lookup_indices[lookup_idx]]));
+            lookup_idx += 1;
+        }
+    }
+
+    for (&samples) |*sample| {
+        var timer = try Timer.start();
+        for (0..config.ops_per_sample) |_| {
+            std.mem.doNotOptimizeAway(map.get(keys[lookup_indices[lookup_idx]]));
+            lookup_idx += 1;
+        }
+        sample.* = timer.read();
+    }
+    const result = computeStats(&samples, config.ops_per_sample);
+    printResult("AutoHashMap random access get()", result);
+}
+
+fn benchGetMissesAutoHashMap(allocator: std.mem.Allocator) !void {
+    const config = RunConfig{};
+    const map_size: usize = 1_000_000;
+    const total_lookups = (config.warmup_samples + config.samples) * config.ops_per_sample;
+    const prealloc_size = std.math.ceilPowerOfTwo(usize, map_size * 2) catch unreachable;
+
+    std.debug.print("\n--- get() All Misses ---\n", .{});
+
+    const keys = try allocator.alloc(u64, map_size);
+    defer allocator.free(keys);
+    var prng = std.Random.DefaultPrng.init(0xdeadbeef);
+    const random = prng.random();
+    for (keys) |*k| {
+        k.* = random.int(u64) | 1;
+    }
+
+    const miss_keys = try allocator.alloc(u64, total_lookups);
+    defer allocator.free(miss_keys);
+    for (miss_keys) |*k| {
+        k.* = random.int(u64) & ~@as(u64, 1);
+    }
+
+    var samples: [config.samples]u64 = undefined;
+    var lookup_idx: usize = 0;
+    var map = std.AutoHashMap(u64, u64).init(allocator);
+    defer map.deinit();
+    try map.ensureTotalCapacity(@intCast(prealloc_size));
+
+    for (keys) |key| {
+        try map.put(key, key);
+    }
+
+    for (0..config.warmup_samples) |_| {
+        for (0..config.ops_per_sample) |_| {
+            std.mem.doNotOptimizeAway(map.get(miss_keys[lookup_idx]));
+            lookup_idx += 1;
+        }
+    }
+
+    for (&samples) |*sample| {
+        var timer = try Timer.start();
+        for (0..config.ops_per_sample) |_| {
+            std.mem.doNotOptimizeAway(map.get(miss_keys[lookup_idx]));
+            lookup_idx += 1;
+        }
+        sample.* = timer.read();
+    }
+    const result = computeStats(&samples, config.ops_per_sample);
+    printResult("AutoHashMap get() all misses", result);
+}
+
+fn benchGetMixedAutoHashMap(allocator: std.mem.Allocator) !void {
+    const config = RunConfig{};
+    const map_size: usize = 1_000_000;
+    const total_lookups = (config.warmup_samples + config.samples) * config.ops_per_sample;
+    const prealloc_size = std.math.ceilPowerOfTwo(usize, map_size * 2) catch unreachable;
+
+    std.debug.print("\n--- get() Mixed Hits/Misses 50%% ---\n", .{});
+
+    const keys = try allocator.alloc(u64, map_size);
+    defer allocator.free(keys);
+    var prng = std.Random.DefaultPrng.init(0xdeadbeef);
+    const random = prng.random();
+    for (keys) |*k| {
+        k.* = random.int(u64) | 1;
+    }
+
+    const lookup_keys = try allocator.alloc(u64, total_lookups);
+    defer allocator.free(lookup_keys);
+    for (lookup_keys) |*k| {
+        if (random.boolean()) {
             k.* = keys[random.intRangeLessThan(usize, 0, map_size)];
         } else {
-            // Miss: generate an even number (guaranteed not in map)
             k.* = random.int(u64) & ~@as(u64, 1);
         }
     }
 
-    // ShitMap benchmark
-    {
-        var samples: [config.samples]u64 = undefined;
-        var lookup_idx: usize = 0;
-        var map = try ziggypoo.ShitMap(u64, u64, .{ .growable = true }).init(allocator, prealloc_size);
-        defer map.deinit();
+    var samples: [config.samples]u64 = undefined;
+    var lookup_idx: usize = 0;
+    var map = std.AutoHashMap(u64, u64).init(allocator);
+    defer map.deinit();
+    try map.ensureTotalCapacity(@intCast(prealloc_size));
 
-        // Populate map
-        for (keys) |key| {
-            try map.insert(key, key);
-        }
-
-        // Warmup
-        for (0..config.warmup_samples) |_| {
-            for (0..config.ops_per_sample) |_| {
-                std.mem.doNotOptimizeAway(map.getPtr(lookup_keys[lookup_idx]));
-                lookup_idx += 1;
-            }
-        }
-
-        for (&samples) |*sample| {
-            var timer = try Timer.start();
-            for (0..config.ops_per_sample) |_| {
-                std.mem.doNotOptimizeAway(map.getPtr(lookup_keys[lookup_idx]));
-                lookup_idx += 1;
-            }
-            sample.* = timer.read();
-        }
-        const result = computeStats(&samples, config.ops_per_sample);
-        printResult("ShitMap getPtr() mixed hits/misses", result);
+    for (keys) |key| {
+        try map.put(key, key);
     }
 
-    // AutoHashMap benchmark
-    {
-        var samples: [config.samples]u64 = undefined;
-        var lookup_idx: usize = 0;
-        var map = std.AutoHashMap(u64, u64).init(allocator);
-        defer map.deinit();
-        try map.ensureTotalCapacity(@intCast(prealloc_size));
-
-        // Populate map
-        for (keys) |key| {
-            try map.put(key, key);
+    for (0..config.warmup_samples) |_| {
+        for (0..config.ops_per_sample) |_| {
+            std.mem.doNotOptimizeAway(map.get(lookup_keys[lookup_idx]));
+            lookup_idx += 1;
         }
-
-        // Warmup
-        for (0..config.warmup_samples) |_| {
-            for (0..config.ops_per_sample) |_| {
-                std.mem.doNotOptimizeAway(map.get(lookup_keys[lookup_idx]));
-                lookup_idx += 1;
-            }
-        }
-
-        for (&samples) |*sample| {
-            var timer = try Timer.start();
-            for (0..config.ops_per_sample) |_| {
-                std.mem.doNotOptimizeAway(map.get(lookup_keys[lookup_idx]));
-                lookup_idx += 1;
-            }
-            sample.* = timer.read();
-        }
-        const result = computeStats(&samples, config.ops_per_sample);
-        printResult("AutoHashMap get() mixed hits/misses", result);
     }
 
-    std.debug.print("\n", .{});
+    for (&samples) |*sample| {
+        var timer = try Timer.start();
+        for (0..config.ops_per_sample) |_| {
+            std.mem.doNotOptimizeAway(map.get(lookup_keys[lookup_idx]));
+            lookup_idx += 1;
+        }
+        sample.* = timer.read();
+    }
+    const result = computeStats(&samples, config.ops_per_sample);
+    printResult("AutoHashMap get() mixed hits/misses", result);
 }
 
-const BenchmarkResult = struct { mean_ns: f64, median_ns: f64, std_dev_ns: f64, min_ns: f64, max_ns: f64, ops_per_sample: usize, outlier_count: usize, sample_count: usize };
+const BenchmarkResult = struct {
+    mean_ns: f64,
+    median_ns: f64,
+    std_dev_ns: f64,
+    min_ns: f64,
+    max_ns: f64,
+    ops_per_sample: usize,
+    outlier_count: usize,
+    sample_count: usize,
+};
 
 fn printResult(name: []const u8, result: BenchmarkResult) void {
     const ops_per_sec = 1_000_000_000.0 / result.mean_ns;
@@ -723,7 +385,7 @@ fn printResult(name: []const u8, result: BenchmarkResult) void {
         ops_per_sec / 1_000_000.0,
     });
     std.debug.print("  Median:   {d:.1} ns/op\n", .{result.median_ns});
-    std.debug.print("  Range:    [{} ns ... {} ns]\n", .{ result.min_ns, result.max_ns });
+    std.debug.print("  Range:    [{d:.1} ns ... {d:.1} ns]\n", .{ result.min_ns, result.max_ns });
     std.debug.print("  Outliers: {}/{} ({d:.0}%)\n\n", .{
         result.outlier_count,
         result.sample_count,
@@ -742,7 +404,6 @@ fn computeStats(samples: []u64, ops_per_sample: usize) BenchmarkResult {
     for (samples) |s| sum += s;
     const mean: f64 = @as(f64, @floatFromInt(sum)) / @as(f64, @floatFromInt(samples.len));
 
-    // Standard deviation
     var variance: f64 = 0.0;
     for (samples) |s| {
         const diff = @as(f64, @floatFromInt(s)) - mean;
@@ -750,7 +411,6 @@ fn computeStats(samples: []u64, ops_per_sample: usize) BenchmarkResult {
     }
     const std_dev = @sqrt(variance / @as(f64, @floatFromInt(samples.len)));
 
-    // Outliers
     var outlier_count: usize = 0;
     for (samples) |s| {
         const diff = @abs(@as(f64, @floatFromInt(s)) - mean);
